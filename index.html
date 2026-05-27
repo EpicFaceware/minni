@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minni - EpicFace_SK</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: system-ui, sans-serif;
+            background: #7ec0ee;
+        }
+
+        #overlay {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    text-align: center;
+    pointer-events: auto;
+    user-select: none;
+
+    /* 1. Subtle dark tint gradient + 2. Your custom image file */
+    background-image: 
+        linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), 
+        url('https://i.postimg.cc/vHypzSZc/Snimka-obrazovky-2026-05-27-180638.png');
+    
+    /* Make sure the image scales perfectly without stretching */
+    background-size: cover;
+    background-position: center;
+    
+    /* Keep pixel-art textures crisp if using low-res images */
+    image-rendering: pixelated; 
+
+    /* Layout framing */
+    padding: 3rem 4rem;
+    border-radius: 1.5rem;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        #overlay h1 {
+            margin: 0 0 0.5rem;
+            font-size: 2rem;
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.35);
+        }
+
+        #overlay p {
+            margin: 0.2rem 0;
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+
+        #startButton {
+            margin-top: 1rem;
+            padding: 0.9rem 1.6rem;
+            font-size: 1rem;
+            color: #2a2a2a;
+            background: #ffd166;
+            border: none;
+            border-radius: 0.8rem;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        #startButton:hover {
+            background: #ffcb4d;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 16px;
+            height: 16px;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-weight: 800;
+            pointer-events: none;
+            user-select: none;
+            text-shadow: 0 0 8px rgba(0, 0, 0, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <div id="overlay">
+        <h1>Minni</h1>
+        <p>Click the button below to start</p>
+        <p>W/A/S/D to move | SPACE to Jump | LEFT CLICK to Place Block</p>
+        <button id="startButton">Start Game</button>
+    </div>
+    <div id="crosshair">+</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.154.0/examples/jsm/controls/PointerLockControls.js';
+
+        // --- NOISE GENERATION SETUP ---
+        const noise = {
+            permutation: [],
+            grad3: [
+                [1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],
+                [1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],
+                [0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]
+            ],
+            seed(seed = 1) {
+                const p = new Array(256);
+                for (let i = 0; i < 256; i++) p[i] = i;
+                let n = 256;
+                while (n) {
+                    const r = Math.floor(seed = (seed * 16807) % 2147483647) % n--;
+                    [p[n], p[r]] = [p[r], p[n]];
+                }
+                for (let i = 0; i < 512; i++) this.permutation[i] = p[i & 255];
+            },
+            fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); },
+            lerp(a, b, t) { return a + t * (b - a); },
+            dot(g, x, y) { return g[0] * x + g[1] * y; },
+            perlin2(x, y) {
+                const X = Math.floor(x) & 255;
+                const Y = Math.floor(y) & 255;
+                x -= Math.floor(x);
+                y -= Math.floor(y);
+                const u = this.fade(x);
+                const v = this.fade(y);
+                const aa = this.permutation[X + this.permutation[Y]] % 12;
+                const ab = this.permutation[X + this.permutation[Y + 1]] % 12;
+                const ba = this.permutation[X + 1 + this.permutation[Y]] % 12;
+                const bb = this.permutation[X + 1 + this.permutation[Y + 1]] % 12;
+                const gradAA = this.grad3[aa];
+                const gradAB = this.grad3[ab];
+                const gradBA = this.grad3[ba];
+                const gradBB = this.grad3[bb];
+                const x1 = this.lerp(this.dot(gradAA, x, y), this.dot(gradBA, x - 1, y), u);
+                const x2 = this.lerp(this.dot(gradAB, x, y - 1), this.dot(gradBB, x - 1, y - 1), u);
+                return this.lerp(x1, x2, v);
+            }
+        };
+        const worldSeed = 42424;
+        noise.seed(worldSeed);
+
+        // --- SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x7ec0ee);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // --- LIGHTING ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(20, 40, 30);
+        scene.add(directionalLight);
+
+        // --- CONTROLS & OVERLAY MECHANICS ---
+        const controls = new PointerLockControls(camera, renderer.domElement);
+        const overlay = document.getElementById('overlay');
+        const startButton = document.getElementById('startButton');
+
+        function requestPointerLock() {
+            controls.lock();
+        }
+
+        startButton.addEventListener('click', requestPointerLock);
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === renderer.domElement) {
+                overlay.style.display = 'none';
+            } else {
+                overlay.style.display = 'block';
+            }
+        });
+
+        // --- PLAYER MOVEMENT & PHYSICS CONFIG ---
+        const movement = { forward: false, backward: false, left: false, right: false, jump: false };
+        const playerHeight = 2.0;       
+        let playerVelocityY = 0;        
+        const gravity = 32.0;           
+        const jumpForce = 11.0;         
+        let isGrounded = false;         
+
+        document.addEventListener('keydown', (event) => {
+            switch (event.code) {
+                case 'KeyS': movement.forward = true; break; // leave W and S as is because they are for some reason inverted
+                case 'KeyW': movement.backward = true; break;
+                case 'KeyA': movement.left = true; break;
+                case 'KeyD': movement.right = true; break;
+                case 'Space': movement.jump = true; break;
+            }
+        });
+        document.addEventListener('keyup', (event) => {
+            switch (event.code) {
+                case 'KeyS': movement.forward = false; break; // leave W and S as is because they are for some reason inverted
+                case 'KeyW': movement.backward = false; break;
+                case 'KeyA': movement.left = false; break;
+                case 'KeyD': movement.right = false; break;
+                case 'Space': movement.jump = false; break; // jumping is kinda pointless cause by colliding with a pre-generated block you immediately puts you on top of it 
+                // if you have a solution pls DM me on Discord (EpicFace_SK) or just fork the code and make a PR, I would be very happy to add it to the main branch
+            }
+        });
+
+        camera.position.set(8, 20, 8);
+
+        // --- TEXTURE LOADING ---
+        const textureLoader = new THREE.TextureLoader();
+        function loadTexture(path) {
+            const tex = textureLoader.load(path);
+            tex.magFilter = THREE.NearestFilter; 
+            tex.minFilter = THREE.NearestFilter;
+            return tex;
+        }
+
+        const texGrassTop  = loadTexture('grass_top.png');
+        const texGrassSide = loadTexture('grass_side.png');
+        const texDirt      = loadTexture('dirt.png');
+
+        const grassMaterialsArray = [
+            new THREE.MeshLambertMaterial({ map: texGrassSide }), 
+            new THREE.MeshLambertMaterial({ map: texGrassSide }), 
+            new THREE.MeshLambertMaterial({ map: texGrassTop }),  
+            new THREE.MeshLambertMaterial({ map: texDirt }),      
+            new THREE.MeshLambertMaterial({ map: texGrassSide }), 
+            new THREE.MeshLambertMaterial({ map: texGrassSide })  
+        ];
+        const dirtMaterial = new THREE.MeshLambertMaterial({ map: texDirt });
+
+        // --- GLOBAL WORLD DATA DATABASE ---
+        const BLOCK_AIR = 0;
+        const BLOCK_GRASS = 1;
+        const BLOCK_DIRT = 2;
+
+        const worldBlocks = new Map(); // Key: "x,y,z" -> Value: Block Type ID
+        const chunks = new Map();      // Key: "chunkX,chunkZ" -> Value: Mesh components
+
+        const chunkSize = 16;
+        const renderDistance = 3; // RENDER DISTANCE IN CHUNKS MODIFY IF YOU WANT, BUT BE CAREFUL WITH PERFORMANCE, 10 TAKES A LOT OF TIME TO LOAD, IF YOU HAVE A GOOD PC YOU CAN TRY 20 OR 22, IF YOU HAVE A LOW END PC I SUGGEST 5 OR 6, ALSO THE WORLD GENERATION IS NOT OPTIMIZED AT ALL, IF YOU WANT TO CONTRIBUTE TO THE PROJECT AND MAKE IT MORE OPTIMIZED FEEL FREE TO MAKE A PR OR DM ME ON DISCORD (EpicFace_SK)
+        const noiseScale = 0.04;
+        const maxHeight = 12;
+        const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+        
+        function getBlockAt(x, y, z) {
+            const key = `${x},${y},${z}`;
+            if (worldBlocks.has(key)) {
+                return worldBlocks.get(key);
+            }
+
+            
+            const noiseValue = noise.perlin2(x * noiseScale, z * noiseScale);
+            const surfaceHeight = Math.max(1, Math.floor((noiseValue + 1) * 0.5 * maxHeight));
+
+            if (y >= surfaceHeight || y < 0) {
+                return BLOCK_AIR;
+            } else if (y === surfaceHeight - 1) {
+                worldBlocks.set(key, BLOCK_GRASS);
+                return BLOCK_GRASS;
+            } else {
+                worldBlocks.set(key, BLOCK_DIRT);
+                return BLOCK_DIRT;
+            }
+        }
+
+        
+        function getHighestBlockAt(x, z) {
+            let y = maxHeight + 10; 
+            while (y >= 0) {
+                if (getBlockAt(x, y, z) !== BLOCK_AIR) {
+                    return y + 1;
+                }
+                y--;
+            }
+            return 1;
+        }
+
+        function generateChunkMesh(chunkX, chunkZ) {
+            const chunkKey = `${chunkX},${chunkZ}`;
+            
+            
+            if (chunks.has(chunkKey)) {
+                const oldChunk = chunks.get(chunkKey);
+                scene.remove(oldChunk.grass);
+                scene.remove(oldChunk.dirt);
+                oldChunk.grass.dispose();
+                oldChunk.dirt.dispose();
+            }
+
+            const maxBlocksInChunk = chunkSize * chunkSize * (maxHeight + 20); 
+            const grassMesh = new THREE.InstancedMesh(cubeGeometry, grassMaterialsArray, maxBlocksInChunk);
+            const dirtMesh  = new THREE.InstancedMesh(cubeGeometry, dirtMaterial, maxBlocksInChunk);
+            
+            grassMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            dirtMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+            const temp = new THREE.Object3D();
+            let grassCount = 0;
+            let dirtCount = 0;
+
+            const startX = chunkX * chunkSize;
+            const startZ = chunkZ * chunkSize;
+
+            
+            for (let x = 0; x < chunkSize; x++) {
+                for (let z = 0; z < chunkSize; z++) {
+                    const globalX = startX + x;
+                    const globalZ = startZ + z;
+
+                    
+                    const columnMax = maxHeight + 20; 
+                    for (let y = 0; y < columnMax; y++) {
+                        const blockType = getBlockAt(globalX, y, globalZ);
+
+                        if (blockType === BLOCK_AIR) continue;
+
+                        temp.position.set(globalX, y, globalZ);
+                        temp.updateMatrix();
+
+                        if (blockType === BLOCK_GRASS) {
+                            grassMesh.setMatrixAt(grassCount, temp.matrix);
+                            grassCount++;
+                        } else if (blockType === BLOCK_DIRT) {
+                            dirtMesh.setMatrixAt(dirtCount, temp.matrix);
+                            dirtCount++;
+                        }
+                    }
+                }
+            }
+
+            grassMesh.count = grassCount;
+            dirtMesh.count = dirtCount;
+
+            scene.add(grassMesh);
+            scene.add(dirtMesh);
+
+            chunks.set(chunkKey, { grass: grassMesh, dirt: dirtMesh });
+        }
+
+        function updateChunks() {
+            const playerChunkX = Math.floor(camera.position.x / chunkSize);
+            const playerChunkZ = Math.floor(camera.position.z / chunkSize);
+            const activeKeys = new Set();
+
+            for (let xOffset = -renderDistance; xOffset <= renderDistance; xOffset++) {
+                for (let zOffset = -renderDistance; zOffset <= renderDistance; zOffset++) {
+                    const cx = playerChunkX + xOffset;
+                    const cz = playerChunkZ + zOffset;
+                    
+                    const chunkKey = `${cx},${cz}`;
+                    if (!chunks.has(chunkKey)) {
+                        generateChunkMesh(cx, cz);
+                    }
+                    activeKeys.add(chunkKey);
+                }
+            }
+
+            for (const [key, chunkGroup] of chunks.entries()) {
+                if (!activeKeys.has(key)) {
+                    scene.remove(chunkGroup.grass);
+                    scene.remove(chunkGroup.dirt);
+                    chunkGroup.grass.dispose();
+                    chunkGroup.dirt.dispose();
+                    chunks.delete(key);
+                }
+            }
+        }
+
+        // --- BLOCK PLACING RAYCAST SYSTEM ---
+        const raycaster = new THREE.Raycaster();
+        raycaster.far = 6; // Reach limitation (Player can only place blocks up to 6 meters away)
+        // !! STILL INDEV !! because they break gravity, hitbox, jumping and all the physics related to the player, if you have a solution pls DM me on Discord (EpicFace_SK) or just fork the code and make a PR, I would be very happy to add it to the main branch
+
+        renderer.domElement.addEventListener('click', (event) => {
+            if (!controls.isLocked) {
+                requestPointerLock();
+                return;
+            }
+
+            
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+            
+            const renderMeshes = [];
+            for (const chunkGroup of chunks.values()) {
+                renderMeshes.push(chunkGroup.grass, chunkGroup.dirt);
+            }
+
+            const intersects = raycaster.intersectObjects(renderMeshes);
+
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                
+                
+                const targetMatrix = new THREE.Matrix4();
+                hit.object.getMatrixAt(hit.instanceId, targetMatrix);
+                const blockPosition = new THREE.Vector3().setFromMatrixPosition(targetMatrix);
+
+                
+                const normal = hit.face.normal;
+                const placeX = Math.floor(blockPosition.x + normal.x);
+                const placeY = Math.floor(blockPosition.y + normal.y);
+                const placeZ = Math.floor(blockPosition.z + normal.z);
+
+                
+                worldBlocks.set(`${placeX},${placeY},${placeZ}`, BLOCK_DIRT);
+
+                
+                const targetChunkX = Math.floor(placeX / chunkSize);
+                const targetChunkZ = Math.floor(placeZ / chunkSize);
+                generateChunkMesh(targetChunkX, targetChunkZ);
+            }
+        });
+
+        // --- GAME LOOP ---
+        const clock = new THREE.Clock();
+        const speed = 7;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = Math.min(clock.getDelta(), 0.1); 
+
+            if (controls.isLocked) {
+                const direction = new THREE.Vector3();
+                if (movement.forward) direction.z -= speed * delta;
+                if (movement.backward) direction.z += speed * delta;
+                if (movement.left) direction.x -= speed * delta;
+                if (movement.right) direction.x += speed * delta;
+                
+                controls.moveRight(direction.x);
+                controls.moveForward(direction.z);
+
+                playerVelocityY -= gravity * delta; 
+
+                if (movement.jump && isGrounded) {
+                    playerVelocityY = jumpForce; 
+                    isGrounded = false;
+                }
+
+                camera.position.y += playerVelocityY * delta;
+
+                // Updated dynamic database collision checks
+                const terrainHeight = getHighestBlockAt(Math.floor(camera.position.x), Math.floor(camera.position.z));
+                const groundY = terrainHeight + playerHeight; 
+
+                if (camera.position.y <= groundY) {
+                    camera.position.y = groundY; 
+                    playerVelocityY = 0;         
+                    isGrounded = true;           
+                } else {
+                    isGrounded = false;          
+                }
+
+                updateChunks();
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+    <!-- Sorry for no mipmapping 
+     by @EpicFace_SK on YT
+     and EpicFaceware on github 
+     feel free to modify
+     also the grass textures should be saved in the same directory as the HTML file 
+     (grass_top.png, grass_side.png, dirt.png) -->
+</body>
+</html>
